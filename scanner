@@ -1,0 +1,62 @@
+#!/usr/bin/env python3
+
+import asyncio
+import struct
+import sys
+from netaddr import IPNetwork
+
+pkt = b'\x00\x00\x00\xc0\xfeSMB@\x00\x00\x00\x00\x00\x00\x00\x00\x00\x1f\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00$\x00\x08\x00\x01\x00\x00\x00\x7f\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00x\x00\x00\x00\x02\x00\x00\x00\x02\x02\x10\x02"\x02$\x02\x00\x03\x02\x03\x10\x03\x11\x03\x00\x00\x00\x00\x01\x00&\x00\x00\x00\x00\x00\x01\x00 \x00\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x03\x00\n\x00\x00\x00\x00\x00\x01\x00\x00\x00\x01\x00\x00\x00\x01\x00\x00\x00\x00\x00\x00\x00'
+
+async def scan_inner(ip):
+    reader, writer = await asyncio.wait_for(asyncio.open_connection(host=str(ip), port=445), timeout=3)
+
+    writer.write(pkt)
+    await writer.drain()
+
+    nb, = struct.unpack(">I", await reader.readexactly(4))
+    res = await reader.readexactly(nb)
+
+    if res[68:70] != b"\x11\x03" or res[70:72] != b"\x02\x00":
+        print(f"{ip} Not vulnerable.")
+    else:
+        print(f"{ip} Vulnerable")
+
+
+async def scan(ip):
+    try:
+        await asyncio.wait_for(scan_inner(ip), timeout=10)
+    except asyncio.TimeoutError:
+        print(f"{ip} timed out")
+    except ConnectionRefusedError as e:
+        print(f"{ip} refused connection")
+    except Exception as e:
+        print(f"{ip} failed: {e!r}")
+
+
+async def run_parallel(coros, concurrency=256):
+    active = set()
+    coros = iter(coros)
+    while coros is not None:
+        if len(active) >= concurrency:
+           # Wait for some task to finish before adding a new one
+            _done, active = await asyncio.wait(active, return_when=asyncio.FIRST_COMPLETED)
+        else:
+            try:
+                active.add(asyncio.create_task(next(coros)))
+            except StopIteration:
+                coros = None
+    # added all coros, wait for remaining tasks to complete
+    await asyncio.wait(active)
+
+
+if len(sys.argv) == 1:
+    print("Give one or multiple target (CIDR) ranges to scan")
+    sys.exit(1)
+
+asyncio.run(
+    run_parallel(
+        scan(ip)
+        for arg in sys.argv[1:]
+        for ip in IPNetwork(arg)
+    )
+)
